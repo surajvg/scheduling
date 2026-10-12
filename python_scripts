@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""
+schedule_dummy_data.py (Updated)
+================================
+Supports multiple SMT lines (SMT 1-4), manual work centres, operator sequences,
+and what-if machine breakdown simulation.
+"""
+import argparse
+import json
+import math
+import random
+from datetime import datetime, timedelta
+
+SHIFT_START_HOUR = 6
+SHIFT_END_HOUR = 20
+SHIFTS = [
+    {"name": "Shift 1", "start": "06:00", "end": "13:00"},
+    {"name": "Shift 2", "start": "13:00", "end": "20:00"},
+]
+WEEK_OFF_JS = [0]
+ISO = "%Y-%m-%dT%H:%M:%S"
+
+MACHINES = [
+    ("AIQA-01", "AIQA", "AIQA NDT machine",        "MACHINE", "Olympus",   "OmniScan X3"),
+    ("AMVB-01", "AMVB", "AMVB machine",            "MACHINE", "Vacuum Co", "VB-200"),
+    ("ASSY-01", "ASSY", "Assy - post bonding",     "MACHINE", "BEL",       "PB-100"),
+    ("ASSY-02", "ASSY", "Post bonding activity",   "MACHINE", "BEL",       "PB-110"),
+    ("ATCL-01", "ATCL", "Auto clave machine",      "MACHINE", "Scholz",    "AC-5000"),
+    ("ATFN-01", "ATFN", "ATFN testing",            "MACHINE", "Keysight",  "E5071C"),
+    ("MFMT1-01", "MFMT1", "MEMT1 machine",         "MACHINE", "Heller",    "1809 MK5"),
+    ("MFMT1-02", "MFMT1", "Reflow oven",           "MACHINE", "Heller",    "1913 MK5"),
+    ("MFMT2-01", "MFMT2", "MEMT2 machine",         "MACHINE", "Koh Young", "Zenith"),
+    ("PLCC-01", "PLCC", "PLCC machine make",       "MACHINE", "Nordson",   "Select Coat"),
+    ("PLCC-02", "PLCC", "Curing oven",             "MACHINE", "Binder",    "FD 115"),
+    ("SMT1-01", "SMT1", "SMT Line 1",              "MACHINE", "Fuji",      "NXT III"),
+    ("SMT2-01", "SMT2", "SMT Line 2",              "MACHINE", "Fuji",      "NXT III"),
+    ("SMT3-01", "SMT3", "SMT Line 3",              "MACHINE", "Fuji",      "NXT III"),
+    ("SMT4-01", "SMT4", "SMT Line 4",              "MACHINE", "Fuji",      "NXT III"),
+    ("MANL-01", "MANL", "Manual inspection bench", "MANUAL",  "-",         "-"),
+    ("MANL-02", "MANL", "Manual rework bench",     "MANUAL",  "-",         "-"),
+]
+
+OPERATORS = ["Anita Rao", "Rahul Nair", "Sunil Kumar", "Priya Shetty", "Imran Khan", "Divya Menon"]
+
+PRODUCTS = {
+    "112190024139": {
+        "description": "PR SEALING ASSEMBLY",
+        "routing": [
+            (10, "PR SEALING",      ["ASSY"],          "SERIES", 6.0, 1, 0),
+            (20, "POST BONDING",    ["ASSY"],          "SERIES", 5.0, 1, 0),
+            (30, "AUTO CLAVE CURE", ["ATCL"],          "BATCH",  0.0, 20, 150),
+            (40, "NDT INSPECTION",  ["AIQA"],          "SERIES", 3.0, 1, 0),
+            (50, "FINAL TEST",      ["ATFN"],          "SERIES", 4.0, 1, 0),
+        ],
+    },
+    "112190024140": {
+        "description": "RF MODULE PCB ASSY",
+        "routing": [
+            (10, "SMT PRINT & PLACE", ["SMT1", "SMT2", "SMT3", "SMT4"], "SERIES", 3.5, 1, 0),
+            (20, "REFLOW",            ["MFMT1"],        "BATCH",  0.0, 12, 55),
+            (30, "AOI INSPECTION",    ["MFMT2"],        "SERIES", 2.5, 1, 0),
+            (40, "MANUAL TOUCH-UP",   ["MANL"],         "SERIES", 4.0, 1, 0),
+            (50, "CONFORMAL COAT",    ["PLCC"],         "SERIES", 2.0, 1, 0),
+            (60, "CURING",            ["PLCC"],         "BATCH",  0.0, 25, 90),
+        ],
+    },
+    "112190024141": {
+        "description": "POWER SUPPLY CARD",
+        "routing": [
+            (10, "SMT PRINT & PLACE", ["SMT1", "SMT2", "SMT3", "SMT4"], "SERIES", 4.5, 1, 0),
+            (20, "REFLOW",            ["MFMT1"],        "BATCH",  0.0, 10, 60),
+            (30, "VISUAL INSPECTION", ["MANL"],         "SERIES", 3.0, 1, 0),
+            (40, "FUNCTIONAL TEST",   ["ATFN"],         "SERIES", 5.0, 1, 0),
+        ],
+    },
+    "112190024142": {
+        "description": "ANTENNA FEED ASSEMBLY",
+        "routing": [
+            (10, "BONDING",         ["ASSY"],   "SERIES", 7.0, 1, 0),
+            (20, "VACUUM BAGGING",  ["AMVB"],   "BATCH",  0.0, 8, 70),
+            (30, "AUTO CLAVE CURE", ["ATCL"],   "BATCH",  0.0, 20, 150),
+            (40, "NDT INSPECTION",  ["AIQA"],   "SERIES", 3.5, 1, 0),
+            (50, "REWORK / TRIM",   ["MANL"],   "SERIES", 2.0, 1, 0),
+        ],
+    },
+}
+
+PRODUCTION_ORDERS = [
+    ("83086577", "112190024139", 24, -96),
+    ("83086578", "112190024140", 40, -90),
+    ("83086579", "112190024141", 30, -72),
+    ("83086580", "112190024142", 16, -60),
+    ("83086581", "112190024140", 60, -36),
+    ("83086582", "112190024139", 32, -24),
+    ("83086583", "112190024141", 45, -12),
+    ("83086584", "112190024142", 20, 0),
+    ("83086585", "112190024140", 50, 12),
+    ("83086586", "112190024141", 80, 24),
+    ("83086587", "112190024139", 48, 36),
+    ("83086588", "112190024142", 36, 48),
+    ("83086589", "112190024140", 90, 60),
+    ("83086590", "112190024141", 70, 84),
+    ("83086591", "112190024139", 60, 96),
+    ("83086592", "112190024142", 40, 120),
+    ("83086593", "112190024140", 100, 144),
+]
+
+class Calendar:
+    def __init__(self, holidays):
+        self.holidays = {h["holiday_date"] for h in holidays}
+
+    def is_working_day(self, d):
+        if d.weekday() == 6:
+            return False
+        return d.strftime("%Y-%m-%d") not in self.holidays
+
+    def window(self, d):
+        base = datetime(d.year, d.month, d.day)
+        return base + timedelta(hours=SHIFT_START_HOUR), base + timedelta(hours=SHIFT_END_HOUR)
+
+    def next_working_start(self, dt):
+        while True:
+            if not self.is_working_day(dt):
+                dt = datetime(dt.year, dt.month, dt.day) + timedelta(days=1, hours=SHIFT_START_HOUR)
+                continue
+            ws, we = self.window(dt)
+            if dt < ws:
+                return ws
+            if dt >= we:
+                dt = datetime(dt.year, dt.month, dt.day) + timedelta(days=1)
+                continue
+            return dt
+
+    def add_working_minutes(self, start, minutes):
+        cur = self.next_working_start(start)
+        remaining = float(minutes)
+        while True:
+            _, we = self.window(cur)
+            avail = (we - cur).total_seconds() / 60.0
+            if remaining <= avail:
+                return cur + timedelta(minutes=remaining)
+            remaining -= avail
+            cur = self.next_working_start(datetime(cur.year, cur.month, cur.day) + timedelta(days=1))
+
+def op_duration_minutes(step, qty):
+    _, _, _, mode, per_unit, batch_size, cycle = step
+    if mode == "BATCH":
+        return math.ceil(qty / batch_size) * cycle
+    return qty * per_unit
+
+def run_scheduler(cal, machines, orders, order_sequence, breakdown_machine=None):
+    by_wc = {}
+    for m in machines:
+        if m["machine_id"] == breakdown_machine:
+            continue  # Simulate machine breakdown by omitting it
+        by_wc.setdefault(m["work_centre"], []).append(m)
+    
+    free_at = {m["machine_id"]: datetime.min for m in machines}
+    result = {}
+
+    for po_no in order_sequence:
+        po = orders[po_no]
+        prev_end = po["release"]
+        for step in PRODUCTS[po["part_number"]]["routing"]:
+            op_no, _, work_centres, *_ = step
+            minutes = op_duration_minutes(step, po["quantity"])
+            best = None
+            for wc in work_centres:
+                for m in by_wc.get(wc, []):
+                    s = cal.next_working_start(max(prev_end, free_at[m["machine_id"]]))
+                    e = cal.add_working_minutes(s, minutes)
+                    if best is None or e < best[2]:
+                        best = (m, s, e)
+            if best is None:
+                # Fallback if work centre unavailable
+                continue
+            m, s, e = best
+            free_at[m["machine_id"]] = e
+            prev_end = e
+            result[f"{po_no}-{op_no}"] = {"machine": m, "start": s, "end": e}
+    return result
+
+def build_dataset(seed=42, now=None, breakdown_machine=None):
+    rnd = random.Random(seed)
+    now = now or datetime.now().replace(microsecond=0)
+    today = datetime(now.year, now.month, now.day)
+
+    holidays = [
+        {"holiday_date": (today + timedelta(days=6)).strftime("%Y-%m-%d"), "name": "Dummy Public Holiday"},
+        {"holiday_date": (today + timedelta(days=20)).strftime("%Y-%m-%d"), "name": "Dummy Festival Holiday"},
+    ]
+    for h in holidays:
+        h["year"] = int(h["holiday_date"][:4])
+    cal = Calendar(holidays)
+
+    machines = [
+        {
+            "machine_id": mid, "work_centre": wc, "machine_name": name, "resource_type": rtype,
+            "eqpt_no": f"EQ-{i + 1:03d}", "eqpt_name": name, "eqpt_make": make, "eqpt_model": model,
+            "stage_id": (i % 6) + 1,
+        }
+        for i, (mid, wc, name, rtype, make, model) in enumerate(MACHINES)
+    ]
+
+    orders = {}
+    for po_no, part, qty, rel_h in PRODUCTION_ORDERS:
+        release = today + timedelta(hours=SHIFT_START_HOUR + rel_h)
+        orders[po_no] = {"production_order": po_no, "part_number": part, "quantity": qty, "release": release}
+
+    seq_plan = [p[0] for p in PRODUCTION_ORDERS]
+    seq_now = seq_plan[:3] + [seq_plan[5], seq_plan[4]] + [seq_plan[3]] + seq_plan[6:]
+
+    plan = run_scheduler(cal, machines, orders, seq_plan)
+    cur = run_scheduler(cal, machines, orders, seq_now, breakdown_machine=breakdown_machine)
+
+    operations = []
+    pbatch = {pn: {st[0]: st for st in p["routing"]} for pn, p in PRODUCTS.items()}
+    for op_id, c in cur.items():
+        po_no, op_id_sub = op_id.rsplit("-", 1)
+        op_no = int(op_id_sub)
+        po = orders[po_no]
+        step = pbatch[po["part_number"]][op_no]
+        p = plan.get(op_id, c)
+        qty = po["quantity"]
+
+        if c["end"] <= now:
+            status, done = "COMPLETED", qty
+        elif c["start"] <= now:
+            frac = (now - c["start"]).total_seconds() / max((c["end"] - c["start"]).total_seconds(), 1)
+            status, done = "IN_PROGRESS", max(1, int(qty * frac))
+        else:
+            status, done = "SCHEDULED", 0
+
+        operations.append({
+            "op_id": op_id,
+            "production_order": po_no,
+            "part_number": po["part_number"],
+            "part_description": PRODUCTS[po["part_number"]]["description"],
+            "operation_no": op_no,
+            "flow_step_id": op_no // 10,
+            "step_name": step[1],
+            "operation_name": step[1],
+            "process_mode": step[3],
+            "quantity": qty,
+            "completed_qty": done,
+            "duration_hours": round(op_duration_minutes(step, qty) / 60.0, 2),
+            "status": status,
+            "operator_name": rnd.choice(OPERATORS),
+            "machine_id": c["machine"]["machine_id"],
+            "start_time": c["start"].strftime(ISO),
+            "end_time": c["end"].strftime(ISO),
+            "planned_machine_id": p["machine"]["machine_id"],
+            "planned_start": p["start"].strftime(ISO),
+            "planned_end": p["end"].strftime(ISO),
+        })
+    operations.sort(key=lambda o: o["start_time"])
+
+    return {
+        "generated_at": now.strftime(ISO),
+        "calendar": {
+            "shift_start": SHIFT_START_HOUR,
+            "shift_end": SHIFT_END_HOUR,
+            "shifts": SHIFTS,
+            "week_off": WEEK_OFF_JS,
+            "holidays": holidays,
+        },
+        "machines": machines,
+        "production_orders": [
+            {
+                "production_order": po_no,
+                "part_number": o["part_number"],
+                "description": PRODUCTS[o["part_number"]]["description"],
+                "quantity": o["quantity"],
+                "release_date": o["release"].strftime(ISO),
+            }
+            for po_no, o in orders.items()
+        ],
+        "operations": operations,
+    }
+
+try:
+    from fastapi import APIRouter, FastAPI, Query
+    from fastapi.middleware.cors import CORSMiddleware
+    from pydantic import BaseModel
+    from typing import List, Optional
+
+    router = APIRowner if 'APIRowner' in globals() else APIRouter(prefix="/schedule", tags=["schedule"])
+    _STATE = {"data": None}
+
+    class OpChange(BaseModel):
+        op_id: str
+        machine_id: Optional[str] = None
+        start_time: Optional[str] = None
+        end_time: Optional[str] = None
+
+    class UpdatePayload(BaseModel):
+        changes: List[OpChange]
+
+    @router.get("/data")
+    def get_schedule_data(regenerate: bool = False, breakdown: Optional[str] = None):
+        return build_dataset(breakdown_machine=breakdown)
+
+    @router.post("/update")
+    def update_schedule(payload: UpdatePayload):
+        return {"updated": len(payload.changes)}
+
+    def create_app():
+        app = FastAPI(title="Schedule API")
+        app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+        app.include_router(router)
+        return app
+except ImportError:
+    router = None
+    create_app = None
