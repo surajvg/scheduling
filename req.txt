@@ -1,0 +1,146 @@
+The requirements
+1. Process time, linked to machines
+- Each process has a known time and is linked to a machine.
+- Each process is either batch or series. Machine load and duration are calculated from that.
+2. Calendars and shifts
+- Calendars are defined unit-wise (working days, holidays). Individual machines or processes override them only where needed, per plan code.
+- Show the shift window (two shifts, about 14 hours) on the chart.
+- Production order quantity (the number of PCBs) should drive the visualisation.
+3. Algorithm plus manual override
+- When an order is launched, it goes into a default queue, and the system proposes a machine and dates.
+- Operators can overwrite and re-prioritise.
+- The output should state “this production order runs on this machine on these dates” and give a completion-date window.
+- If a machine goes down, the queue is rescheduled.
+4. Operator login view
+- The operator logs in and sees his own sequence, with the first job at the top.
+5. Machine and manual processes
+- Manual processes (hand work) must be schedulable too, not only machines.
+- The default production view shows both machine and manual work.
+- Separate tabs or paths show machine-only scheduling and manual-process-only scheduling.
+- Reuse the existing CMTI-style UI rather than inventing a new one.
+6. Nothing hard-coded
+- Process types (manual, machine and others), machines and process mappings all come from metadata.
+- Adding a new type or machine should need no code change.
+- Data is stored as JSON, so process-wise, machine-wise and manual-process views can all be derived from it.
+7. Multiple lines (SMT and assembly)
+- Several parallel lines (SMT 1, 2, 3, 4) each have their own machines (about six per SMT line).
+- A new order should auto-assign to the least-loaded or empty line, and the operator can still move it.
+- The number of lines drawn on screen follows the master data. If 4 lines are configured, 4 groups appear, with their machines under each.
+- You can select one line to see its chart, select another, or see the overall view.
+8. What-if scenarios (demo-worthy)
+- Switch off a machine, for example a one-month breakdown, and the schedule recalculates.
+- Add more machines to the same job and a 3-month order drops to about 1 month.
+9. Separate modules
+- Planning and Scheduling are two independent modules, and scheduling must not live inside the planning tab.
+- Plan vs Actual depends on both of them.
+- Machine-level traceability is wanted, for example how a given machine performed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 1. Process Time, Linked to Machines
+
+* Each operation in a production order is tied to a specific routing step, defining its eligible work centres and process mode (`BATCH` or `SERIES`).
+
+
+* Duration and machine load are calculated dynamically: series operations scale linearly with quantity, while batch operations factor in batch sizes and cycle times.
+
+
+* Operations are normalized and mapped to specific machine IDs for rendering on the timeline.
+
+
+
+### 2. Calendars and Shifts
+
+* Shift windows (e.g., Shift 1 from 06:00 to 13:00 and Shift 2 from 13:00 to 20:00, totaling 14 working hours) are defined in the calendar configuration and rendered across the chart scale.
+
+
+* Working days, week-offs (e.g., Sundays), and public holidays are respected by the finite-capacity scheduler, automatically skipping non-working periods.
+
+
+* Production order quantities (number of PCBs) directly drive the visualization length and capacity consumption.
+
+
+
+### 3. Algorithm Plus Manual Override
+
+* The backend scheduler proposes initial machine assignments and dates upon order release.
+
+
+* Operators and planners can perform manual overrides by dragging bars across rows or time slots directly on the **Machine Schedule** tab.
+
+
+* Modifications are tracked as pending changes and persisted back to the server via `saveChanges` (`API_ROUTES.update`). If machine breakdowns occur, the queue can be recalculated and refreshed.
+
+
+
+### 4. Operator Login View
+
+* Each operation record includes an assigned `operator_name` (e.g., Anita Rao, Rahul Nair).
+
+
+* Operators can view their specific sequence of tasks—with current and upcoming jobs highlighted—by filtering the operation list or viewing tooltips that display operator details, quantities (`completed_qty / quantity`), and status.
+
+
+
+### 5. Machine and Manual Processes
+
+* Both machine work centres and manual work benches (e.g., `MANL-01` Manual inspection bench, `MANL-02` Manual rework bench with `resource_type: "MANUAL"`) are fully schedulable.
+
+
+* The default production view renders both machine and manual rows together.
+
+
+* Separate filtering via `MultiSelect` on machine types or work centres allows users to isolate machine-only or manual-process-only views while retaining the existing CMTI-style UI.
+
+
+
+### 6. Nothing Hard-Coded
+
+* All master data—including machine definitions, resource types, process mappings, routings, calendars, and holidays—comes entirely from JSON metadata (`schedule/data`).
+
+
+* Adding new machine types, work centres, or process definitions requires zero front-end code changes; the Gantt scale, rows, and color maps automatically adapt to the ingested metadata.
+
+
+
+### 7. Multiple Lines (SMT and Assembly)
+
+* Parallel production lines (such as SMT Line 1, SMT Line 2, and assembly work centres) are configured directly in the equipment master data.
+
+
+* New orders auto-assign to the least-loaded or eligible line during scheduling, while operators retain the ability to move orders between lines.
+
+
+* The UI dynamically renders machine groups based on master data configuration, allowing users to filter by specific lines or view the overall multi-line layout.
+
+
+
+### 8. What-If Scenarios (Demo-Worthy)
+
+* Dynamic rescheduling allows simulation of events such as switching off a machine (e.g., simulating a breakdown).
+
+
+* Adding parallel machine capacity or re-prioritizing orders recalculates delivery timelines, immediately demonstrating how a 3-month order timeline can be compressed.
+
+
+
+### 9. Separate Modules
+
+* **Planning** and **Scheduling** operate as two independent modules represented by separate tabs (**Planned Schedule** for the baseline plan and **Machine Schedule** for the live execution view).
+
+
+* Plan vs. Actual comparisons are derived by comparing planned start/end timestamps against current execution times and completion quantities.
+
+
+* Machine-level traceability is maintained by tracking historical operations, operator allocations, and performance metrics per machine ID.
