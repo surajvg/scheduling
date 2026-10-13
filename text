@@ -1,0 +1,5 @@
+The scheduler must distinguish four things:
+Dependency: Is the process allowed to start?
+Availability: Is a suitable resource free?
+Calendar: Can the operation run during this time?
+Execution state: Is the operation planned, ready, running, blocked, completed, or awaiting rework?
