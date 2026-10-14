@@ -1,0 +1,123 @@
+Handling rework blockages, rush order insertions, and the shift-horizon rule (where a job requiring more time than what remains in the shift is automatically rolled over to the next day) requires an advanced finite-capacity scheduling engine.
+​In industrial manufacturing, failing to account for these real-world constraints leads to shop-floor chaos, half-finished WIP on lines, and idle operators.
+
+from datetime import datetime, timedelta
+
+def get_next_valid_shift_start(current_dt, shift_calendar):
+    """
+    Finds the exact start time of the next available working shift.
+    """
+    check_dt = current_dt + timedelta(minutes=1)
+    while True:
+        weekday = check_dt.strftime('%A')
+        time_str = check_dt.strftime('%H:%M')
+        
+        if weekday in shift_calendar:
+            for shift_start, shift_end in shift_calendar[weekday]:
+                if time_str == shift_start:
+                    return check_dt
+        
+        check_dt += timedelta(minutes=1)
+        # Safety break to prevent infinite loops if calendar is empty
+        if (check_dt - current_dt).days > 7:
+            return current_dt
+
+def get_remaining_shift_minutes(current_dt, shift_calendar):
+    """
+    Calculates how many working minutes are left in the current shift from current_dt.
+    Returns 0 if current_dt is outside any shift.
+    """
+    weekday = current_dt.strftime('%A')
+    time_str = current_dt.strftime('%H:%M')
+    
+    if weekday in shift_calendar:
+        for shift_start, shift_end in shift_calendar[weekday]:
+            if shift_start <= time_str < shift_end:
+                # Convert shift_end ('16:00') into datetime for today
+                end_hour, end_min = map(int, shift_end.split(':'))
+                shift_end_dt = current_dt.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+                delta_mins = int((shift_end_dt - current_dt).total_seconds() / 60)
+                return max(0, delta_mins)
+    return 0
+
+def advanced_mes_scheduler(batches, lines_config, setup_matrices, shift_calendar):
+    """
+    Schedules batches with line blocking, rush orders, and shift-horizon cutoffs.
+    """
+    master_schedule = []
+    
+    # 1. Sort batches by Priority (Rush orders first) then Due Date
+    sorted_batches = sorted(batches, key=lambda x: (-x.get('priority', 0), x.get('due_date', datetime.max)))
+
+    for batch in sorted_batches:
+        best_line = None
+        best_start_time = None
+        best_completion_time = None
+        min_completion_time = datetime.max
+
+        for line_id in batch['compatible_lines']:
+            line_state = lines_config[line_id]
+            
+            # CHECK 1: Is line blocked due to rework, maintenance, or downstream jam?
+            if line_state.get('is_blocked', False) or line_state.get('rework_active', False):
+                continue # Skip this line entirely
+
+            setup_matrix = setup_matrices[line_id]
+            current_type = line_state['current_type']
+            target_type = batch['product_type']
+            
+            setup_mins = 0 if current_type is None else setup_matrix.get((current_type, target_type), 20)
+            
+            # Determine earliest possible start
+            potential_start = max(line_state['current_time'], batch.get('release_time', datetime.min))
+            total_job_duration = setup_mins + (batch['quantity'] * batch['cycle_time_per_unit'])
+            
+            # CHECK 2: Shift-Horizon Check (The "Next Day" Rule)
+            remaining_shift_mins = get_remaining_shift_minutes(potential_start, shift_calendar)
+            
+            if remaining_shift_mins < total_job_duration:
+                # Not enough time left in shift! Roll over start time to the next working day's shift start.
+                potential_start = get_next_valid_shift_start(potential_start, shift_calendar)
+                # Recalculate setup since line type might reset or change over night
+                # For simplicity, assume setup applies at the new start
+            
+            setup_end_time = potential_start + timedelta(minutes=setup_mins)
+            run_mins = batch['quantity'] * batch['cycle_time_per_unit']
+            potential_completion = setup_end_time + timedelta(minutes=run_mins)
+            
+            if potential_completion < min_completion_time:
+                min_completion_time = potential_completion
+                best_line = line_id
+                best_start_time = setup_end_time
+                best_completion_time = potential_completion
+
+        if best_line:
+            master_schedule.append({
+                "batch_id": batch['id'],
+                "assigned_line": best_line,
+                "start_time": best_start_time,
+                "completion_time": best_completion_time,
+                "status": "Scheduled"
+            })
+            # Update line tracking state
+            lines_config[best_line]['current_time'] = best_completion_time
+            lines_config[best_line]['current_type'] = batch['product_type']
+        else:
+            # If all compatible lines are blocked or unavailable
+            master_schedule.append({
+                "batch_id": batch['id'],
+                "assigned_line": None,
+                "status": "Deferred / Line Blocked"
+            })
+
+    return master_schedule
+
+Core Logic Rules for Advanced Assembly Line Scheduling
+​Rule 1: Line Blocking & Rework Interlocks
+​If a line is processing defective boards and diverting them to rework, or if downstream buffers are saturated with uninspected WIP, the line state must be flagged as BLOCKED or REWORK_HOLD. The scheduler is legally barred from assigning any new production orders to that line until the clearance signal is received from the Quality/MES station.
+​Rule 2: Rush Order Preemption
+​When a high-priority production order arrives mid-shift, the scheduler recalculates queue priorities. If a current batch hasn't physically started assembly, the rush order can preempt it, pushing the standard order down the queue.
+​Rule 3: The Shift-Horizon & Next-Day Roll-Over Rule
+​If there are only 2 hours left in the current shift, but the next job requires 6 hours to complete setup and run, the scheduler must refuse to start it today. Instead, it cuts off the shift, marks the remaining time as non-working, and automatically schedules the job start time for the very first minute of the next working day's shift.
+
+
